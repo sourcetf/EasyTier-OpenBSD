@@ -36,3 +36,11 @@ strip = true
 inherits = "release"
 opt-level = "z"
 strip = "symbols"
+
+# --- OpenBSD support patches (see patches/) ---
+[patch.crates-io]
+guarden = { path = "patches/guarden" }
+boringtun-easytier = { path = "patches/boringtun-easytier" }
+
+[patch."https://github.com/EasyTier/rust-tun"]
+tun-easytier = { path = "patches/rust-tun" }

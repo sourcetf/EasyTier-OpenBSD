@@ -5,7 +5,8 @@
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    target_os = "openbsd"
 ))]
 mod darwin;
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
@@ -23,7 +24,8 @@ use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    target_os = "openbsd"
 ))]
 use tokio::process::Command;
 
@@ -100,7 +102,8 @@ pub trait IfConfiguerTrait: Send + Sync {
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    target_os = "openbsd"
 ))]
 fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
     if prefix_length > 32 {
@@ -120,7 +123,8 @@ fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    target_os = "openbsd"
 ))]
 async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     let cmd_out: std::process::Output;
@@ -168,7 +172,8 @@ pub type IfConfiger = DummyIfConfiger;
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
-    target_os = "freebsd"
+    target_os = "freebsd",
+    target_os = "openbsd"
 ))]
 pub type IfConfiger = darwin::MacIfConfiger;
 
@@ -180,6 +185,7 @@ pub type IfConfiger = windows::WindowsIfConfiger;
     target_os = "linux",
     target_os = "windows",
     target_os = "freebsd",
+    target_os = "openbsd",
 )))]
 pub type IfConfiger = DummyIfConfiger;
 

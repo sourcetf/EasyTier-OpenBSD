@@ -1,0 +1,80 @@
+name: Build OpenBSD
+
+# Build EasyTier (easytier-core / easytier-cli / easytier-web with embedded Web UI)
+# for OpenBSD amd64. Artifacts are uploaded on the Actions page.
+#
+# This repo carries OpenBSD support in-tree:
+#   - patches/guarden/                  guarden 0.2.0 (cfg_select needs rustc>=1.95)
+#   - patches/boringtun-easytier/       boringtun 0.6.1 (CLOCK_BOOTTIME is Linux-only)
+#   - patches/rust-tun/                 EasyTier/rust-tun fork + new OpenBSD TUN backend
+#   - easytier/ + Cargo.toml/lock       source adaptations (committed)
+# rollup has no OpenBSD native build -> the CI swaps in the official
+# @rollup/wasm-node build for the frontend compilation.
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  build-openbsd-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build in OpenBSD VM
+        uses: vmactions/openbsd-vm@v1
+        with:
+          # Match the version validated on the reference server (rust 1.94.1)
+          release: "7.9"
+          usesh: true
+          cpu: 4
+          memory: "8G"
+          # rust     = rustc/cargo (official OpenBSD package, ignores rust-toolchain.toml)
+          # git      = cargo git dependencies
+          # protobuf = protoc (prost-wkt-types build script)
+          # llvm     = libclang (bindgen), LIBCLANG_PATH below
+          # node     = build the embedded web UI frontend
+          prepare: |
+            pkg_add -I rust git protobuf llvm node
+            npm install -g pnpm@9
+          run: |
+            set -ex
+            # The workspace is NFS-mounted; copy to VM-local disk so cargo can flock
+            (cd "$GITHUB_WORKSPACE" && tar --exclude .git -cf - .) | (mkdir -p /root/src && cd /root/src && tar -xf -)
+            cd /root/src
+
+            # ---------- frontend (embedded Web UI) ----------
+            (cd easytier-web/frontend-lib && pnpm install --prefer-offline)
+            (cd easytier-web/frontend && pnpm install --prefer-offline)
+            pnpm add -w @rollup/wasm-node@4.50.1
+            for W in node_modules/.pnpm/@rollup+wasm-node@4.50.1*/node_modules/@rollup/wasm-node/dist; do
+              for R in node_modules/.pnpm/rollup@4.50.1*/node_modules/rollup/dist; do
+                rm -rf "$R" && cp -r "$W" "$R"
+              done
+            done
+            (cd easytier-web/frontend-lib && pnpm build)
+            (cd easytier-web/frontend && pnpm build)
+
+            # ---------- rust binaries ----------
+            export RUSTC_BOOTSTRAP=1                  # guarden patch: #![feature(cfg_select)]
+            export LIBCLANG_PATH=/usr/local/llvm19/lib
+            # full LTO is slow; disable (remove these two lines to re-enable)
+            export CARGO_PROFILE_RELEASE_LTO=false
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+            cargo build --release --ignore-rust-version -p easytier -p easytier-web --bins \
+              --features easytier-web/embed --jobs "$(sysctl -n hw.ncpu)"
+            strip target/release/easytier-core target/release/easytier-cli target/release/easytier-web
+            mkdir -p "$GITHUB_WORKSPACE/openbsd-amd64"
+            cp target/release/easytier-core target/release/easytier-cli target/release/easytier-web \
+               "$GITHUB_WORKSPACE/openbsd-amd64/"
+
+      - name: Show version
+        run: ./openbsd-amd64/easytier-core --version || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-openbsd-amd64-${{ github.sha }}
+          path: openbsd-amd64/
+          if-no-files-found: error

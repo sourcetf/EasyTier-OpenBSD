@@ -135,6 +135,16 @@ impl PacketProtocol {
         }
     }
 
+    #[cfg(target_os = "openbsd")]
+    fn into_pi_field(self) -> Result<u16, io::Error> {
+        use nix::libc;
+        match self {
+            PacketProtocol::IPv4 => Ok(libc::PF_INET as u16),
+            PacketProtocol::IPv6 => Ok(libc::PF_INET6 as u16),
+            PacketProtocol::Other => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
+        }
+    }
+
     #[cfg(target_os = "windows")]
     fn into_pi_field(self) -> Result<u16, io::Error> {
         unimplemented!()

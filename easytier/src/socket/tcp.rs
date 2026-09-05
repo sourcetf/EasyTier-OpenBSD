@@ -350,11 +350,20 @@ pub(crate) fn prepare_proxy_tcp_socket(stream: &TcpStream) -> io::Result<()> {
     #[cfg(not(target_os = "windows"))]
     const TCP_KEEPALIVE_RETRIES: u32 = 2;
 
-    let keepalive = TcpKeepalive::new()
-        .with_time(TCP_KEEPALIVE_TIME)
-        .with_interval(TCP_KEEPALIVE_INTERVAL);
+    let keepalive = TcpKeepalive::new().with_time(TCP_KEEPALIVE_TIME);
 
-    #[cfg(not(target_os = "windows"))]
+    // socket2 does not provide with_interval/with_retries on OpenBSD
+    #[cfg(not(any(
+        target_os = "openbsd",
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "haiku",
+        target_os = "vita",
+        target_os = "espidf"
+    )))]
+    let keepalive = keepalive.with_interval(TCP_KEEPALIVE_INTERVAL);
+
+    #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
     let keepalive = keepalive.with_retries(TCP_KEEPALIVE_RETRIES);
 
     let socket = SockRef::from(stream);

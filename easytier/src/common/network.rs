@@ -243,6 +243,14 @@ impl InterfaceFilter {
     }
 }
 
+#[cfg(target_os = "openbsd")]
+impl InterfaceFilter {
+    async fn filter_iface(&self) -> bool {
+        // tun(4) devices are point-to-point, loopback is excluded as usual.
+        !self.state.is_point_to_point && !self.state.is_loopback && self.state.is_up
+    }
+}
+
 #[cfg(target_os = "windows")]
 impl InterfaceFilter {
     async fn filter_iface(&self) -> bool {
