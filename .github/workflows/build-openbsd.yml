@@ -51,7 +51,6 @@ jobs:
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
-          sudo mkdir -p /mnt/vmdata && sudo chown -R $(id -un) /mnt/vmdata
           df -h /
 
       - name: Build in OpenBSD VM
@@ -62,8 +61,6 @@ jobs:
           usesh: true
           cpu: 4
           mem: 8192
-          # store the VM disk image on the big runner volume
-          data-dir: /mnt/vmdata
           # rust     = rustc/cargo (official OpenBSD package, ignores rust-toolchain.toml)
           # git      = cargo git dependencies
           # protobuf = protoc (prost-wkt-types build script)
