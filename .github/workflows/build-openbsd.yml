@@ -29,7 +29,7 @@ jobs:
           release: "7.9"
           usesh: true
           cpu: 4
-          memory: "8G"
+          mem: 8192
           # rust     = rustc/cargo (official OpenBSD package, ignores rust-toolchain.toml)
           # git      = cargo git dependencies
           # protobuf = protoc (prost-wkt-types build script)
@@ -41,7 +41,9 @@ jobs:
           run: |
             set -ex
             # The workspace is NFS-mounted; copy to VM-local disk so cargo can flock
-            (cd "$GITHUB_WORKSPACE" && tar --exclude .git -cf - .) | (mkdir -p /root/src && cd /root/src && tar -xf -)
+            # (OpenBSD tar has no --exclude long option, use -X listfile)
+            printf '.git\n' > /tmp/xlist
+            (cd "$GITHUB_WORKSPACE" && tar -cf - -X /tmp/xlist .) | (mkdir -p /root/src && cd /root/src && tar -xf -)
             cd /root/src
 
             # ---------- frontend (embedded Web UI) ----------
