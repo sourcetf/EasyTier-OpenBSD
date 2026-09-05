@@ -45,11 +45,14 @@ jobs:
           ls easytier-web/frontend/dist/
           # node_modules must not enter the OpenBSD VM (disk space)
           rm -rf node_modules easytier-web/frontend/node_modules easytier-web/frontend-lib/node_modules
+          rm -rf ~/.local/share/pnpm ~/.npm
 
-      - name: Prepare VM data dir
+      - name: Free disk space
         run: |
-          df -h / /mnt || true
-          mkdir -p /mnt/vmdata
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo mkdir -p /mnt/vmdata && sudo chown -R $(id -un) /mnt/vmdata
+          df -h /
 
       - name: Build in OpenBSD VM
         uses: vmactions/openbsd-vm@v1
