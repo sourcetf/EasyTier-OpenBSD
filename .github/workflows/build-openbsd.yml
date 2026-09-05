@@ -46,6 +46,11 @@ jobs:
           # node_modules must not enter the OpenBSD VM (disk space)
           rm -rf node_modules easytier-web/frontend/node_modules easytier-web/frontend-lib/node_modules
 
+      - name: Prepare VM data dir
+        run: |
+          df -h / /mnt || true
+          mkdir -p /mnt/vmdata
+
       - name: Build in OpenBSD VM
         uses: vmactions/openbsd-vm@v1
         with:
@@ -54,6 +59,8 @@ jobs:
           usesh: true
           cpu: 4
           mem: 8192
+          # store the VM disk image on the big runner volume
+          data-dir: /mnt/vmdata
           # rust     = rustc/cargo (official OpenBSD package, ignores rust-toolchain.toml)
           # git      = cargo git dependencies
           # protobuf = protoc (prost-wkt-types build script)
@@ -73,6 +80,11 @@ jobs:
             # full LTO is slow; disable (remove these two lines to re-enable)
             export CARGO_PROFILE_RELEASE_LTO=false
             export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+            df -h / || true
+            cargo fetch
+            # .crate archives are not needed once unpacked; frees ~1GB
+            rm -rf ~/.cargo/registry/cache
+            df -h / || true
             cargo build --release --ignore-rust-version -p easytier -p easytier-web --bins \
               --features easytier-web/embed --jobs "$(sysctl -n hw.ncpu)"
             strip target/release/easytier-core target/release/easytier-cli target/release/easytier-web
