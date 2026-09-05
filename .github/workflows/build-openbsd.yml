@@ -8,8 +8,11 @@ name: Build OpenBSD
 #   - patches/boringtun-easytier/       boringtun 0.6.1 (CLOCK_BOOTTIME is Linux-only)
 #   - patches/rust-tun/                 EasyTier/rust-tun fork + new OpenBSD TUN backend
 #   - easytier/ + Cargo.toml/lock       source adaptations (committed)
-# rollup has no OpenBSD native build -> the CI swaps in the official
-# @rollup/wasm-node build for the frontend compilation.
+#
+# The web UI frontend is built on the ubuntu host (rollup has no OpenBSD native
+# build; keeping node_modules out of the VM also avoids filling the VM disk),
+# then easytier-web is compiled inside the OpenBSD VM with rust-embed picking
+# up easytier-web/frontend/dist.
 
 on:
   push:
@@ -21,6 +24,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build web UI frontend (ubuntu host)
+        run: |
+          npm install -g pnpm@9
+          (cd easytier-web/frontend-lib && pnpm install --prefer-offline)
+          (cd easytier-web/frontend && pnpm install --prefer-offline)
+          pnpm add -w @rollup/wasm-node@4.50.1
+          # not needed on linux, keep the lockfile churn minimal on OpenBSD
+          for R in node_modules/.pnpm/rollup@4.50.1*/node_modules/rollup/dist; do
+            W=$(ls -d node_modules/.pnpm/@rollup+wasm-node@4.50.1*/node_modules/@rollup/wasm-node/dist)
+            rm -rf "$R" && cp -r "$W" "$R"
+          done
+          (cd easytier-web/frontend-lib && pnpm build)
+          (cd easytier-web/frontend && pnpm build)
+          ls easytier-web/frontend/dist/
+          # node_modules must not enter the OpenBSD VM (disk space)
+          rm -rf node_modules easytier-web/frontend/node_modules easytier-web/frontend-lib/node_modules
 
       - name: Build in OpenBSD VM
         uses: vmactions/openbsd-vm@v1
@@ -34,10 +58,8 @@ jobs:
           # git      = cargo git dependencies
           # protobuf = protoc (prost-wkt-types build script)
           # llvm     = libclang (bindgen), LIBCLANG_PATH below
-          # node     = build the embedded web UI frontend
           prepare: |
-            pkg_add -I rust git protobuf llvm node
-            npm install -g pnpm@9
+            pkg_add -I rust git protobuf llvm
           run: |
             set -ex
             # The workspace is NFS-mounted; copy to VM-local disk so cargo can flock
@@ -46,19 +68,6 @@ jobs:
             (cd "$GITHUB_WORKSPACE" && tar -cf - -X /tmp/xlist .) | (mkdir -p /root/src && cd /root/src && tar -xf -)
             cd /root/src
 
-            # ---------- frontend (embedded Web UI) ----------
-            (cd easytier-web/frontend-lib && pnpm install --prefer-offline)
-            (cd easytier-web/frontend && pnpm install --prefer-offline)
-            pnpm add -w @rollup/wasm-node@4.50.1
-            for W in node_modules/.pnpm/@rollup+wasm-node@4.50.1*/node_modules/@rollup/wasm-node/dist; do
-              for R in node_modules/.pnpm/rollup@4.50.1*/node_modules/rollup/dist; do
-                rm -rf "$R" && cp -r "$W" "$R"
-              done
-            done
-            (cd easytier-web/frontend-lib && pnpm build)
-            (cd easytier-web/frontend && pnpm build)
-
-            # ---------- rust binaries ----------
             export RUSTC_BOOTSTRAP=1                  # guarden patch: #![feature(cfg_select)]
             export LIBCLANG_PATH=/usr/local/llvm19/lib
             # full LTO is slow; disable (remove these two lines to re-enable)
