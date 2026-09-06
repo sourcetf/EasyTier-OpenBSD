@@ -74,7 +74,9 @@ jobs:
             export CARGO_HOME="$GITHUB_WORKSPACE/.cargo-home"
             export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
             export RUSTC_BOOTSTRAP=1                  # guarden patch: #![feature(cfg_select)]
-            export LIBCLANG_PATH=/usr/local/llvm19/lib
+            # pkg_add llvm installs the newest major (llvm19/20/21...) — detect it
+            export LIBCLANG_PATH="$(ls -d /usr/local/llvm*/lib | sort | tail -1)"
+            echo "LIBCLANG_PATH=$LIBCLANG_PATH"
             # full LTO is slow; disable (remove these two lines to re-enable)
             export CARGO_PROFILE_RELEASE_LTO=false
             export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
