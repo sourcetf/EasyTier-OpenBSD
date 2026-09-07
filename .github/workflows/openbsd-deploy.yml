@@ -1,0 +1,19 @@
+name: OpenBSD Deploy Artifacts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/openbsd/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload OpenBSD deploy artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openbsd-deploy
+          path: deploy/openbsd/
+          retention-days: 30

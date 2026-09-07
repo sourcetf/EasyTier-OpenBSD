@@ -1,0 +1,11 @@
+#!/bin/ksh
+
+daemon="/usr/local/bin/easytier-web"
+daemon_flags="-d /var/db/easytier/et.db --file-log-dir /var/log/easytier"
+daemon_logger="daemon.info"
+
+. /etc/rc.d/rc.subr
+
+rc_reload=NO
+
+rc_cmd $1
