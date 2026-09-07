@@ -48,15 +48,18 @@ jobs:
             exit 1
           fi
 
-          # 只保留本仓库自己的 workflow，上游 .github 一概剔除
-          find .github -type f \
-            ! -path "./.github/workflows/build-openbsd.yml" \
-            ! -path "./.github/workflows/sync-upstream.yml" \
-            -delete
-          find .github -type d -empty -delete
+          # 只保留本仓库自己的 workflow，上游 .github 一概剔除。
+          # （用白名单整目录替换，避免 find -path 模式匹配出错）
+          mkdir -p /tmp/keep-workflows
+          cp .github/workflows/build-openbsd.yml /tmp/keep-workflows/ 2>/dev/null || true
+          cp .github/workflows/sync-upstream.yml /tmp/keep-workflows/ 2>/dev/null || true
+          rm -rf .github
+          mkdir -p .github/workflows
+          cp /tmp/keep-workflows/*.yml .github/workflows/
           git add -A .github
+          # 只有 prune 产生了 staged 改动才 amend（"Already up to date" 时没有）
           if ! git diff --cached --quiet; then
-            git commit --amend --no-edit
+            git commit --amend --no-edit --allow-empty
           fi
 
           AFTER_TREE=$(git rev-parse "HEAD^{tree}")
