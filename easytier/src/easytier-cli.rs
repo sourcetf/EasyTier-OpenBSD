@@ -27,6 +27,7 @@ use terminal_size::{Width as TerminalWidth, terminal_size};
 use unicode_width::UnicodeWidthStr;
 
 use easytier::service_manager::{Service, ServiceInstallOptions};
+use libc::{signal as libc_signal, SIG_IGN, SIGPIPE};
 use tokio::time::timeout;
 
 use easytier::{
@@ -3261,9 +3262,27 @@ fn optional_column_targets(
         .collect()
 }
 
-#[tokio::main]
+fn main() -> Result<(), Error> {
+    // Ignore SIGPIPE BEFORE the tokio runtime starts.
+    // Otherwise a broken pipe during command output (e.g. `| head`) panics
+    // the runtime with a "failed printing to stdout" abort before we reach
+    // this point. SIG_IGN is async-signal-safe.
+    // SAFETY: libc_signal and SIG_IGN are valid; this runs single-threaded
+    // before any threads are spawned.
+    unsafe {
+        libc_signal(SIGPIPE, SIG_IGN);
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build tokio runtime: {e}"))?;
+    rt.block_on(async_main())
+}
+
 #[tracing::instrument]
-async fn main() -> Result<(), Error> {
+async fn async_main() -> Result<(), Error> {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
     let cli = Cli::parse();

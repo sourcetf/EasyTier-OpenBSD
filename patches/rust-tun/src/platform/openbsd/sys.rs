@@ -7,7 +7,7 @@ use nix::{ioctl_read, ioctl_readwrite, ioctl_write_ptr};
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ifaliasreq {
-    pub ifran: [c_char; IFNAMSIZ],
+    pub ifra_name: [c_char; IFNAMSIZ],
     pub addr: sockaddr,
     pub dstaddr: sockaddr,
     pub mask: sockaddr,

@@ -161,7 +161,7 @@ impl Device {
             let mut req: ifaliasreq = mem::zeroed();
             ptr::copy_nonoverlapping(
                 self.tun_name.as_ptr() as *const c_char,
-                req.ifran.as_mut_ptr(),
+                req.ifra_name.as_mut_ptr(),
                 self.tun_name.len(),
             );
 
