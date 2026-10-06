@@ -1,0 +1,17 @@
+# EasyTier node configuration
+dhcp = true
+listeners = [
+    "tcp://0.0.0.0:11010",
+    "udp://0.0.0.0:11010",
+    "wg://0.0.0.0:11011",
+    "quic://0.0.0.0:11012",
+    "ws://0.0.0.0:11011/",
+    "wss://0.0.0.0:11012/",
+    "faketcp://0.0.0.0:11013",
+]
+tcp_whitelist = []
+udp_whitelist = []
+
+[network_identity]
+network_name = "openbsd-node-default"
+network_secret = "ebd7abdb886cbbd6a5c0f1f69877ac3d"

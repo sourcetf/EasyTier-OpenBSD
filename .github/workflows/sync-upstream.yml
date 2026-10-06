@@ -1,0 +1,300 @@
+name: Sync Upstream
+
+# main 的形态：上游 EasyTier 的提交历史 + 本仓库自己的一个 delta 提交（见
+# `git log --oneline main` 顶部那个 "OpenBSD support (delta vs EasyTier upstream)"）。
+# `git diff upstream/main main` 就是这个 delta，除此之外 main 与上游逐字节一致。
+#
+# 同步 = 把 delta 重放到上游最新，**不产生 merge 提交**，历史永远是一条直线：
+#
+#   git fetch upstream main
+#   git rebase --onto upstream/main <旧上游 tip> main
+#
+# 因此：
+#   - 只有 delta 覆盖到的路径才可能冲突；delta 之外的任何冲突都是真冲突，会上报。
+#   - 重放之后 Cargo.lock 用 `cargo metadata` 做最小重解析（本地 [patch] 重新生效），
+#     并 amend 回 delta 提交。
+#   - .github 整体取本仓库的版本（上游新增的 workflow / issue 模板一律剔除）。
+#   - 最后校验：main 与上游的差异必须只落在 DELTA_PATHS 里，否则说明同步出了问题。
+#
+# 失败时只维护一个同名跟踪 issue（已存在就评论、不存在才新建），恢复后自动关闭。
+
+on:
+  schedule:
+    - cron: "0 2,14 * * *" # UTC 02:00 / 14:00 = 北京时间 10:00 / 22:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  actions: write # workflow_dispatch API 需要 actions:write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: EasyTier/EasyTier
+  UPSTREAM_BRANCH: main
+  TRACKING_ISSUE_TITLE: "[sync] 上游同步需要人工介入"
+  # main 允许与上游不同的路径。这是 fork 的全部 delta，任何落在外面的差异都是同步 bug。
+  DELTA_PATHS: |
+    .github/**
+    Cargo.toml
+    Cargo.lock
+    easytier/Cargo.toml
+    easytier/src/common/ifcfg/**
+    easytier/src/common/machine_id.rs
+    easytier/src/common/network.rs
+    easytier/src/easytier-cli.rs
+    easytier/src/instance/virtual_nic.rs
+    easytier/src/socket/fake_tcp/netfilter/mod.rs
+    easytier/src/socket/tcp.rs
+    deploy/openbsd/**
+    patches/**
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 只为按重放后的清单做一次最小重解析；版本与 rust-toolchain.toml 保持一致
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+
+      - name: Replay the delta onto upstream
+        id: sync
+        run: |
+          set -u
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 失败原因写给后面那个上报步骤用（见 Report failure）
+          echo "rebase-error" > /tmp/reason.txt
+
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+          BEFORE=$(git rev-parse HEAD)
+          OLD_BASE=$(git merge-base HEAD "upstream/${UPSTREAM_BRANCH}")
+          NEW_TIP=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")
+
+          if [ "$OLD_BASE" = "$NEW_TIP" ]; then
+            echo "上游没有新提交，无需同步"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git rebase --onto "upstream/${UPSTREAM_BRANCH}" "$OLD_BASE" HEAD; then
+            echo "delta 干净重放完成"
+          else
+            # 冲突了。注意 rebase 里的方向与 merge 相反：
+            #   --ours   = 被重放到的基底（上游侧）
+            #   --theirs = 正在被重放的提交（我们的 delta）
+            # 已知必然冲突的两类：
+            #   1) .github   delta 删掉了上游的 CI，而上游又改了这些文件 -> 保持删除
+            #   2) Cargo.lock delta 改了它（本地 [patch]），上游也改了 -> 取上游侧，
+            #      下一步用 cargo 重建（那里才拿得到重放后的清单）
+            git diff --name-only --diff-filter=U -- .github \
+              | while read -r f; do git rm -q -f --ignore-unmatch "$f"; done
+            if [ -n "$(git ls-files -u -- Cargo.lock)" ]; then
+              git checkout --ours -- Cargo.lock
+              git add Cargo.lock
+            fi
+
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+            if [ -s /tmp/conflicts.txt ]; then
+              echo "conflict" > /tmp/reason.txt
+              echo "changed=conflict" >> "$GITHUB_OUTPUT"
+              git rebase --abort || true
+              exit 1
+            fi
+            GIT_EDITOR=true git rebase --continue
+          fi
+
+          # .github 整体取本仓库自己的版本：delta 只删得掉它创建时就存在的那些文件，
+          # 上游后来新增的 workflow / issue 模板不会自动消失，这里一并剔除。
+          git rm -r -qf --ignore-unmatch .github
+          git checkout "$BEFORE" -- .github 2>/dev/null || true
+          git add -A .github
+
+          echo "changed=pending" >> "$GITHUB_OUTPUT"
+          echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
+
+      - name: Relock Cargo.lock against the replayed manifests
+        id: relock
+        if: steps.sync.outputs.changed == 'pending'
+        run: |
+          set -u
+          # cargo metadata 做的是"最小"重解析：只补上/去掉必要的条目，其余版本保持
+          # 不动（cargo generate-lockfile 是全新解析，会把依赖顺手升级一遍，别用）。
+          cargo metadata --format-version 1 > /dev/null
+
+          cat > /tmp/check-patches.py <<'PY'
+          import sys, tomllib
+          patches = tomllib.load(open("Cargo.toml", "rb")).get("patch", {})
+          names = sorted({n for table in patches.values() for n in table})
+          packages = tomllib.load(open("Cargo.lock", "rb"))["package"]
+          stale = sorted({p["name"] for p in packages if p["name"] in names and "source" in p})
+          if stale:
+              print(f"::error::[patch] 已失效：{', '.join(stale)} 仍然解析到 registry 版本。"
+                    "上游多半提升了这些 crate 的版本，patches/ 下的本地副本需要跟着更新。")
+              sys.exit(1)
+          print("本地补丁生效：" + ", ".join(names))
+          PY
+
+          if ! python3 /tmp/check-patches.py; then
+            echo "stale-patch" > /tmp/reason.txt
+            exit 1
+          fi
+
+          # 把 .github 与 Cargo.lock 的调整折回 delta 提交（没变化就不要动它）
+          git add -A .github Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit --amend --no-edit
+          fi
+
+      - name: Verify the delta whitelist
+        id: verify
+        if: steps.sync.outputs.changed == 'pending'
+        run: |
+          set -u
+          # main 与上游的差异必须只落在 DELTA_PATHS 里。落到外面 = 同步把不属于 delta
+          # 的东西带进来了（或该删的没删），这时绝不能推。
+          git diff --name-only "upstream/${UPSTREAM_BRANCH}" HEAD > /tmp/delta-files.txt
+          printf '%s\n' "$DELTA_PATHS" > /tmp/delta-paths.txt
+
+          if ! python3 - <<'PY'
+          import fnmatch, sys
+          patterns = [p.strip() for p in open("/tmp/delta-paths.txt", encoding="utf-8") if p.strip()]
+          files = [f.strip() for f in open("/tmp/delta-files.txt", encoding="utf-8") if f.strip()]
+          stray = [f for f in files
+                   if not any(fnmatch.fnmatch(f, p) for p in patterns)]
+          if stray:
+              print("::error::下列文件与上游不同，但不在允许的 delta 路径里：")
+              for f in stray:
+                  print("::error::  " + f)
+              sys.exit(1)
+          print(f"delta 白名单校验通过：{len(files)} 个文件全部落在允许的路径内")
+          PY
+          then
+            echo "stray-files" > /tmp/reason.txt
+            exit 1
+          fi
+
+      - name: Push
+        id: commit
+        if: steps.sync.outputs.changed == 'pending'
+        run: |
+          set -u
+          if [ "$(git rev-parse HEAD)" = "${{ steps.sync.outputs.before }}" ]; then
+            echo "重放结果与原 main 相同，无需推送"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # delta 每次重放都会被改写，所以这里必然是非快进推送
+          git push --force-with-lease origin HEAD:main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Build OpenBSD
+        if: steps.commit.outputs.changed == 'true'
+        run: |
+          curl -sS -f -X POST \
+            -H "Authorization: token ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/build-openbsd.yml/dispatches" \
+            -d '{"ref":"main"}'
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          API: ${{ github.api_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -u
+          REASON=$(cat /tmp/reason.txt 2>/dev/null || echo unknown)
+          {
+            echo "sync-upstream 需要人工处理。运行记录：$RUN_URL"
+            echo
+            case "$REASON" in
+              conflict)
+                echo "把 delta 重放到 ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} 时下列文件冲突，"
+                echo "而且不是 .github / Cargo.lock 这两类已知冲突——上游改到了 OpenBSD 补丁覆盖的源码："
+                echo
+                echo '```'
+                cat /tmp/conflicts.txt
+                echo '```'
+                echo
+                echo "手工处理（先看 git log --oneline main，把 <旧上游 tip> 换成 delta 现在挂着的那个上游提交）："
+                echo '```'
+                echo "git fetch https://github.com/${UPSTREAM_REPO}.git ${UPSTREAM_BRANCH}"
+                echo "git rebase --onto FETCH_HEAD <旧上游 tip> main"
+                echo "# 解决冲突 -> git rebase --continue"
+                echo "# 然后 cargo metadata && git add Cargo.lock && git commit --amend --no-edit"
+                echo "git push --force-with-lease origin main"
+                echo '```'
+                ;;
+              stale-patch)
+                echo "重放本身没有冲突，但 patches/ 下的 [patch] 已失效：上游提升了被补丁 crate 的版本，"
+                echo "继续同步会得到一份用未打补丁版本构建的代码。"
+                echo
+                echo "需要把对应的 \`patches/<name>/\` 更新到上游要求的版本，再重建 Cargo.lock。"
+                echo "参考：\`git show upstream/main:Cargo.lock | grep -A3 'name = \"<crate>\"'\` 看上游要求哪个版本。"
+                ;;
+              stray-files)
+                echo "同步后 main 与上游的差异里出现了 delta 白名单之外的文件——同步逻辑有问题，"
+                echo "main 没有被改动。看运行记录里 ::error:: 打出的文件清单。"
+                ;;
+              *)
+                echo "同步流程本身出错（不是上游冲突），看运行记录里的日志。"
+                ;;
+            esac
+          } > /tmp/body.md
+
+          NUM=$(curl -sS -H "Authorization: token $GH_TOKEN" \
+            "$API/repos/$REPO/issues?state=open&per_page=100" \
+            | jq -r --arg t "$TRACKING_ISSUE_TITLE" '.[] | select(.title == $t) | .number' | head -1)
+
+          if [ -n "$NUM" ]; then
+            jq -n --rawfile b /tmp/body.md '{body: $b}' \
+              | curl -sS -f -X POST \
+                  -H "Authorization: token $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  "$API/repos/$REPO/issues/$NUM/comments" -d @-
+            echo "已在跟踪 issue #$NUM 下追加评论"
+          else
+            jq -n --arg t "$TRACKING_ISSUE_TITLE" --rawfile b /tmp/body.md '{title: $t, body: $b}' \
+              | curl -sS -f -X POST \
+                  -H "Authorization: token $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  "$API/repos/$REPO/issues" -d @-
+            echo "已新建跟踪 issue"
+          fi
+
+      - name: Close the tracking issue when the sync is healthy
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          API: ${{ github.api_url }}
+        run: |
+          set -u
+          NUM=$(curl -sS -H "Authorization: token $GH_TOKEN" \
+            "$API/repos/$REPO/issues?state=open&per_page=100" \
+            | jq -r --arg t "$TRACKING_ISSUE_TITLE" '.[] | select(.title == $t) | .number' | head -1)
+          if [ -n "$NUM" ]; then
+            curl -sS -f -X PATCH \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$API/repos/$REPO/issues/$NUM" \
+              -d '{"state":"closed","state_reason":"completed"}' > /dev/null
+            echo "已关闭跟踪 issue #$NUM"
+          else
+            echo "没有未关闭的跟踪 issue"
+          fi

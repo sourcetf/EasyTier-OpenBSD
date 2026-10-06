@@ -988,8 +988,6 @@ dependencies = [
 [[package]]
 name = "boringtun-easytier"
 version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f09b4d1ada8affba260cb185bbdf6d5acff42f924dea1a17f938cf3e8fbe475"
 dependencies = [
  "aead 0.5.2",
  "atomic-shim",
@@ -2556,6 +2554,7 @@ dependencies = [
  "hyper-util",
  "indoc",
  "kcp-sys",
+ "libc",
  "log",
  "machine-uid",
  "maplit",
@@ -4011,8 +4010,6 @@ dependencies = [
 [[package]]
 name = "guarden"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11e5aa725802d305ed9726003d1d2c0329cea9802314d482b7d1206b10e92461"
 dependencies = [
  "futures-core",
  "guarden-macros",
@@ -10599,7 +10596,6 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 [[package]]
 name = "tun-easytier"
 version = "1.1.1"
-source = "git+https://github.com/EasyTier/rust-tun#12378839e7985283df0e4fb536b7137230356db5"
 dependencies = [
  "bytes",
  "cfg-if",

@@ -122,7 +122,9 @@ nix = { version = "0.31.3", features = [
     "ioctl",
     "net",
     "fs",
+    "signal",
 ] }
+libc = "0.2"
 
 uuid = { workspace = true, features = [
     "v4",
