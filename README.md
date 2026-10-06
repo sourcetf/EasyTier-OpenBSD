@@ -315,35 +315,3 @@ Use EasyTier only for lawful purposes and in compliance with applicable laws
 and regulations. You are responsible for ensuring that you are authorized to
 connect to and administer the networks and devices involved.
 
-## Sponsor
-
-CDN acceleration and security protection for this project are sponsored by Tencent EdgeOne.
-
-<p align="center">
-  <a href="https://edgeone.ai/?from=github" target="_blank">
-    <img src="assets/edgeone.png" width="200" alt="EdgeOne Logo">
-  </a>
-</p>
-
-Special thanks to [Langlang Cloud](https://langlangy.cn/?i26c5a5)  and [RainCloud](https://www.rainyun.com/NjM0NzQ1_) for sponsoring our public servers.
-We also thank [Linfeng Cloud (林枫云)](https://www.dkdun.cn/aff/RZGBFYSW) for supporting EasyTier.
-
-<p align="center">
-<a href="https://langlangy.cn/?i26c5a5" target="_blank">
-<img src="assets/langlang.png" width="200">
-</a>
-<a href="https://langlangy.cn/?i26c5a5" target="_blank">
-<img src="assets/raincloud.png" width="200">
-</a>
-<a href="https://www.dkdun.cn/aff/RZGBFYSW" target="_blank">
-<img src="assets/linfengyun.png" width="200" alt="林枫云">
-</a>
-</p>
-
-
-If you find EasyTier helpful, please consider sponsoring us. Software development and maintenance require a lot of time and effort, and your sponsorship will help us better maintain and improve EasyTier.
-
-<p align="center">
-<img src="assets/wechat.png" width="200">
-<img src="assets/alipay.png" width="200">
-</p>
