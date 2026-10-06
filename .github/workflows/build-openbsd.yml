@@ -4,7 +4,7 @@ name: Build OpenBSD
 # for OpenBSD amd64. Artifacts are uploaded on the Actions page.
 #
 # This repo carries OpenBSD support in-tree:
-#   - patches/guarden/                  guarden 0.2.0 (cfg_select needs rustc>=1.95)
+#   - patches/guarden/                  guarden 0.3.0 (cfg_select needs rustc>=1.95)
 #   - patches/boringtun-easytier/       boringtun 0.6.1 (CLOCK_BOOTTIME is Linux-only)
 #   - patches/rust-tun/                 EasyTier/rust-tun fork + new OpenBSD TUN backend
 #   - easytier/ + Cargo.toml/lock       source adaptations (committed)
