@@ -1,11 +1,23 @@
 name: Sync Upstream
 
-# 每天两次从 EasyTier/EasyTier 同步代码到本仓库。
-# - .github 目录不跟随上游：合并后只保留本仓库自己的两个 workflow，
-#   上游新增/修改的 workflow、issue 模板等全部剔除。
-# - 合并后若有实际变化：push 到 main，并通过 API 主动触发 Build OpenBSD
-#   （用 GITHUB_TOKEN push 不会自动触发 workflow，所以这里显式 dispatch）。
-# - 合并冲突（通常是上游改动了我们打过补丁的文件）→ 放弃合并、失败并开 issue。
+# 每天两次把 EasyTier/EasyTier@main 同步进本仓库。
+#
+# 原实现为什么永远失败：本仓库删掉了上游的 .github/workflows/*，而上游仍在改这些
+# 文件。git merge 在"合并过程中"就会报 modify/delete 冲突并直接失败，于是永远走不
+# 到后面"剔除 .github"那一步 —— 从第二次运行起它就不可能成功（历史上只有一个成功
+# 的合并提交）。Cargo.lock 同样每次都冲突：guarden / boringtun-easytier /
+# tun-easytier 被换成了 patches/ 下的本地副本，上游每次改 lock 都会撞上。
+#
+# 现在的做法：允许 merge 失败，再确定性地处理两类"必然冲突"的路径，只有其余冲突才
+# 当成真冲突上报：
+#   .github/**   一律取本仓库的版本（上游的 CI、issue 模板全部丢弃）
+#   Cargo.lock   先取上游的，再让 cargo 按合并后的清单做一次"最小"重解析，
+#                本地补丁会重新生效（不要用 cargo generate-lockfile：那是全新解析，
+#                会顺手把依赖升级一遍）
+# 然后校验 patches/ 里的每个 [patch] 是否真的生效。上游一旦提升被补丁 crate 的版本，
+# 补丁会静默失效、构建反而去用未打补丁的 registry 版本，所以这种情况直接失败。
+#
+# 失败时只维护一个同名跟踪 issue（已存在就评论、不存在才新建），恢复后自动关闭。
 
 on:
   schedule:
@@ -21,6 +33,11 @@ concurrency:
   group: sync-upstream
   cancel-in-progress: false
 
+env:
+  UPSTREAM_REPO: EasyTier/EasyTier
+  UPSTREAM_BRANCH: main
+  TRACKING_ISSUE_TITLE: "[sync] 上游同步需要人工介入"
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -29,51 +46,118 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Merge upstream (excluding upstream .github)
+      # 只为按合并后的清单做一次最小重解析；版本与 rust-toolchain.toml 保持一致
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+
+      - name: Merge upstream and resolve known divergences
         id: sync
         run: |
           set -u
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git remote add upstream https://github.com/EasyTier/EasyTier.git
-          git fetch upstream main
+          # 失败原因写给后面那个上报步骤用（见 Report failure）
+          echo "merge-error" > /tmp/reason.txt
+
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
 
           BEFORE_SHA=$(git rev-parse HEAD)
           BEFORE_TREE=$(git rev-parse "HEAD^{tree}")
+          echo "before_sha=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
+          echo "before_tree=$BEFORE_TREE" >> "$GITHUB_OUTPUT"
 
-          if ! git merge --no-edit upstream/main; then
-            git merge --abort || true
+          # 允许失败：modify/delete（.github）和 Cargo.lock 冲突都在预期之内
+          if git merge --no-commit --no-ff "upstream/${UPSTREAM_BRANCH}"; then
+            MERGE_RC=0
+          else
+            MERGE_RC=$?
+          fi
+
+          # 用 rev-parse 而不是 .git/MERGE_HEAD：worktree 里 .git 是个文件
+          if ! git rev-parse -q --verify MERGE_HEAD > /dev/null; then
+            if [ "$MERGE_RC" -ne 0 ]; then
+              echo "::error::git merge 失败，且没有产生待解决的合并状态（退出码 $MERGE_RC）"
+              echo "changed=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            echo "上游没有新提交，无需同步"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 1) .github 整体取本仓库自己的版本：git rm 会把 modify/delete 冲突按
+          #    "保留删除"一侧解决，顺带丢掉上游新增的 workflow / issue 模板。
+          git rm -r -qf --ignore-unmatch .github
+          git checkout "$BEFORE_SHA" -- .github 2>/dev/null || true
+          git add -A .github
+
+          # 2) Cargo.lock 先取上游版本，下一步交给 cargo 做最小重解析
+          if [ -n "$(git ls-files -u -- Cargo.lock)" ]; then
+            git checkout --theirs -- Cargo.lock
+            git add Cargo.lock
+          fi
+
+          # 3) 还剩下的未合并路径 = 上游改到了 OpenBSD 补丁覆盖的源码，需要人工
+          git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+          if [ -s /tmp/conflicts.txt ]; then
+            echo "conflict" > /tmp/reason.txt
             echo "changed=conflict" >> "$GITHUB_OUTPUT"
+            git merge --abort || true
             exit 1
           fi
 
-          # 只保留本仓库自己的 workflow，上游 .github 一概剔除。
-          # （用白名单整目录替换，避免 find -path 模式匹配出错）
-          mkdir -p /tmp/keep-workflows
-          cp .github/workflows/build-openbsd.yml /tmp/keep-workflows/ 2>/dev/null || true
-          cp .github/workflows/sync-upstream.yml /tmp/keep-workflows/ 2>/dev/null || true
-          rm -rf .github
-          mkdir -p .github/workflows
-          cp /tmp/keep-workflows/*.yml .github/workflows/
-          git add -A .github
-          # 只有 prune 产生了 staged 改动才 amend（"Already up to date" 时没有）
-          if ! git diff --cached --quiet; then
-            git commit --amend --no-edit --allow-empty
+          echo "changed=pending" >> "$GITHUB_OUTPUT"
+
+      - name: Relock Cargo.lock against the merged manifests
+        id: relock
+        if: steps.sync.outputs.changed == 'pending'
+        run: |
+          set -u
+          # cargo metadata 做的是"最小"重解析：只补上/去掉必要的条目，其余版本保持
+          # 不动（cargo generate-lockfile 是全新解析，会把依赖顺手升级一遍，别用）。
+          cargo metadata --format-version 1 > /dev/null
+
+          cat > /tmp/check-patches.py <<'PY'
+          import sys, tomllib
+          patches = tomllib.load(open("Cargo.toml", "rb")).get("patch", {})
+          names = sorted({n for table in patches.values() for n in table})
+          packages = tomllib.load(open("Cargo.lock", "rb"))["package"]
+          stale = sorted({p["name"] for p in packages if p["name"] in names and "source" in p})
+          if stale:
+              print(f"::error::[patch] 已失效：{', '.join(stale)} 仍然解析到 registry 版本。"
+                    "上游多半提升了这些 crate 的版本，patches/ 下的本地副本需要跟着更新。")
+              sys.exit(1)
+          print("本地补丁生效：" + ", ".join(names))
+          PY
+
+          if ! python3 /tmp/check-patches.py; then
+            echo "stale-patch" > /tmp/reason.txt
+            exit 1
           fi
 
-          AFTER_TREE=$(git rev-parse "HEAD^{tree}")
-          if [ "$BEFORE_TREE" != "$AFTER_TREE" ]; then
-            git push origin main
+      - name: Commit and push
+        id: commit
+        if: steps.sync.outputs.changed == 'pending'
+        run: |
+          set -u
+          git add -A Cargo.lock
+          git commit --no-edit
+
+          if [ "$(git rev-parse "HEAD^{tree}")" != "${{ steps.sync.outputs.before_tree }}" ]; then
+            git push origin HEAD:main
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
-            # 上游只有 .github 变化或无变化：丢弃空合并
-            git reset --hard "$BEFORE_SHA"
+            # 上游只有 .github 变化（已被丢弃）或无变化：丢掉这个空合并
+            git reset --hard "${{ steps.sync.outputs.before_sha }}"
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Trigger Build OpenBSD
-        if: steps.sync.outputs.changed == 'true'
+        if: steps.commit.outputs.changed == 'true'
         run: |
           curl -sS -f -X POST \
             -H "Authorization: token ${{ github.token }}" \
@@ -81,11 +165,80 @@ jobs:
             "${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/build-openbsd.yml/dispatches" \
             -d '{"ref":"main"}'
 
-      - name: Open issue on conflict
-        if: failure() && steps.sync.outputs.changed == 'conflict'
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          API: ${{ github.api_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          curl -sS -f -X POST \
-            -H "Authorization: token ${{ github.token }}" \
-            -H "Accept: application/vnd.github+json" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/issues" \
-            -d '{"title":"[sync] 上游合并冲突，需要手工处理","body":"sync-upstream 定时任务合并 EasyTier/EasyTier@main 时发生冲突（大概率是上游改动了 OpenBSD 补丁覆盖的文件）。请手工合并：git fetch upstream && git merge upstream/main，解决冲突后重新提交，推上来的变更会自动触发 Build OpenBSD。"}'
+          set -u
+          REASON=$(cat /tmp/reason.txt 2>/dev/null || echo unknown)
+          {
+            echo "sync-upstream 需要人工处理。运行记录：$RUN_URL"
+            echo
+            case "$REASON" in
+              conflict)
+                echo "合并 ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} 时下列文件冲突（上游改到了 OpenBSD 补丁覆盖的源码）："
+                echo
+                echo '```'
+                cat /tmp/conflicts.txt
+                echo '```'
+                echo
+                echo "手工处理：\`git fetch upstream && git merge upstream/main\`，解决冲突后推送；推上来的变更会触发 Build OpenBSD。"
+                ;;
+              stale-patch)
+                echo "合并本身没有冲突，但 patches/ 下的 [patch] 已失效：上游提升了被补丁 crate 的版本，"
+                echo "继续同步会得到一份用未打补丁版本构建的代码。"
+                echo
+                echo "需要把对应的 \`patches/<name>/\` 更新到上游要求的版本，再重建 Cargo.lock。"
+                echo "参考：\`git show upstream/main:Cargo.lock | grep -A3 'name = \"<crate>\"'\` 看上游要求哪个版本。"
+                ;;
+              *)
+                echo "同步流程本身出错（不是上游冲突），看运行记录里的日志。"
+                ;;
+            esac
+          } > /tmp/body.md
+
+          NUM=$(curl -sS -H "Authorization: token $GH_TOKEN" \
+            "$API/repos/$REPO/issues?state=open&per_page=100" \
+            | jq -r --arg t "$TRACKING_ISSUE_TITLE" '.[] | select(.title == $t) | .number' | head -1)
+
+          if [ -n "$NUM" ]; then
+            jq -n --rawfile b /tmp/body.md '{body: $b}' \
+              | curl -sS -f -X POST \
+                  -H "Authorization: token $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  "$API/repos/$REPO/issues/$NUM/comments" -d @-
+            echo "已在跟踪 issue #$NUM 下追加评论"
+          else
+            jq -n --arg t "$TRACKING_ISSUE_TITLE" --rawfile b /tmp/body.md '{title: $t, body: $b}' \
+              | curl -sS -f -X POST \
+                  -H "Authorization: token $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  "$API/repos/$REPO/issues" -d @-
+            echo "已新建跟踪 issue"
+          fi
+
+      - name: Close the tracking issue when the sync is healthy
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          API: ${{ github.api_url }}
+        run: |
+          set -u
+          NUM=$(curl -sS -H "Authorization: token $GH_TOKEN" \
+            "$API/repos/$REPO/issues?state=open&per_page=100" \
+            | jq -r --arg t "$TRACKING_ISSUE_TITLE" '.[] | select(.title == $t) | .number' | head -1)
+          if [ -n "$NUM" ]; then
+            curl -sS -f -X PATCH \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$API/repos/$REPO/issues/$NUM" \
+              -d '{"state":"closed","state_reason":"completed"}' > /dev/null
+            echo "已关闭跟踪 issue #$NUM"
+          else
+            echo "没有未关闭的跟踪 issue"
+          fi
