@@ -7,8 +7,7 @@ use anyhow::Context;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
 use easytier::proto::api::config::{
-    ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch, PatchConfigRequest,
-    VpnPortalClientPatch,
+    ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, VpnPortalClientPatch,
 };
 use easytier::proto::api::instance::{
     GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
@@ -23,9 +22,7 @@ use easytier::web_client::{self, WebClient};
 use easytier::{
     common::config::{NetworkConfig, NetworkConfigExt},
     common::{
-        config::{
-            ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader,
-        },
+        config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
         log,
     },
     instance::factory::{NativeInstanceManager, native_instance_manager},
@@ -133,6 +130,7 @@ async fn run_network_instance(
 ) -> Result<(), String> {
     let client_manager = get_client_manager!()?;
     let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
+    let _mutation = client_manager.config_mutation.lock().await;
     client_manager
         .pre_run_network_instance_hook(&app, &toml_config, manager::PersistedConfigSource::User)
         .await?;
@@ -186,6 +184,7 @@ async fn get_vpn_portal_info(instance_id: String) -> Result<Option<VpnPortalInfo
 
 #[tauri::command]
 async fn patch_vpn_portal_clients(
+    app: AppHandle,
     instance_id: String,
     action: String,
     name: Option<String>,
@@ -212,28 +211,18 @@ async fn patch_vpn_portal_clients(
     };
 
     let client_manager = get_client_manager!()?;
-    let rpc = client_manager
-        .rpc_manager
-        .rpc_client()
-        .scoped_client::<ConfigRpcClientFactory<BaseController>>(1, 1, "".to_string());
-    rpc.patch_config(
-        BaseController::default(),
-        PatchConfigRequest {
-            instance: Some(InstanceIdentifier {
-                selector: Some(instance_identifier::Selector::Id(instance_id.into())),
-            }),
-            patch: Some(InstanceConfigPatch {
-                vpn_portal_clients: vec![VpnPortalClientPatch {
-                    action: action as i32,
-                    client,
-                }],
-                ..Default::default()
-            }),
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    let _mutation = client_manager.config_mutation.lock().await;
+    client_manager
+        .handle_patch_vpn_portal_clients(
+            app,
+            instance_id,
+            vec![VpnPortalClientPatch {
+                action: action as i32,
+                client,
+            }],
+        )
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -277,6 +266,7 @@ async fn remove_network_instance(app: AppHandle, instance_id: String) -> Result<
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
     let client_manager = get_client_manager!()?;
+    let _mutation = client_manager.config_mutation.lock().await;
     client_manager
         .handle_remove_network_instances(app.clone(), vec![instance_id])
         .await
@@ -298,6 +288,7 @@ async fn update_network_config_state(
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
     let client_manager = get_client_manager!()?;
+    let _mutation = client_manager.config_mutation.lock().await;
     if !disabled {
         let (cfg, source) = client_manager
             .handle_get_network_config_with_source(app.clone(), instance_id)
@@ -336,7 +327,9 @@ async fn save_network_config(app: AppHandle, cfg: NetworkConfig) -> Result<(), S
         .instance_id()
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
-    get_client_manager!()?
+    let client_manager = get_client_manager!()?;
+    let _mutation = client_manager.config_mutation.lock().await;
+    client_manager
         .handle_save_network_config(app, instance_id, cfg)
         .await
         .map_err(|e| e.to_string())
@@ -371,7 +364,9 @@ async fn load_configs(
     configs: Vec<manager::StoredGuiConfig>,
     enabled_networks: Vec<String>,
 ) -> Result<(), String> {
-    get_client_manager!()?
+    let client_manager = get_client_manager!()?;
+    let _mutation = client_manager.config_mutation.lock().await;
+    client_manager
         .load_configs(app, configs, enabled_networks)
         .await
         .map_err(|e| e.to_string())?;
@@ -979,6 +974,7 @@ mod manager {
     pub(super) struct GUIClientManager {
         pub(super) storage: GUIStorage,
         pub(super) rpc_manager: BidirectRpcManager,
+        pub(super) config_mutation: Mutex<()>,
     }
     impl GUIClientManager {
         pub async fn new(
@@ -999,6 +995,7 @@ mod manager {
             Ok(Self {
                 storage: GUIStorage::new(),
                 rpc_manager,
+                config_mutation: Mutex::new(()),
             })
         }
 
@@ -1242,6 +1239,17 @@ mod manager {
         }
     }
     impl RemoteClientManager<AppHandle, GUIConfig, anyhow::Error> for GUIClientManager {
+        fn get_config_rpc_client(
+            &self,
+            _: AppHandle,
+        ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>> {
+            Some(
+                self.rpc_manager
+                    .rpc_client()
+                    .scoped_client::<ConfigRpcClientFactory<BaseController>>(1, 1, String::new()),
+            )
+        }
+
         fn get_rpc_client(
             &self,
             _: AppHandle,
@@ -1463,7 +1471,7 @@ pub fn run_gui() -> std::process::ExitCode {
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
             };
-            let config = LoggingConfigBuilder::default()
+            let config = LoggingConfig::builder()
                 .file_logger(FileLoggerConfig {
                     dir: Some(log_dir.to_string_lossy().to_string()),
                     level: None,
@@ -1471,8 +1479,7 @@ pub fn run_gui() -> std::process::ExitCode {
                     size_mb: None,
                     count: None,
                 })
-                .build()
-                .map_err(|e| e.to_string())?;
+                .build();
             let Ok(_) = log::init(&config, true) else {
                 return Ok(());
             };

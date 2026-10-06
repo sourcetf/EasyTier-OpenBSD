@@ -5,15 +5,16 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/artifact"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/coreabi"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/hostabi"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/reactor"
-	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/easytier/easytier/easytier-go/internal/artifact"
+	"github.com/easytier/easytier/easytier-go/internal/contextutil"
+	"github.com/easytier/easytier/easytier-go/internal/coreabi"
+	"github.com/easytier/easytier/easytier-go/internal/hostabi"
+	"github.com/easytier/easytier/easytier-go/internal/reactor"
+	"github.com/easytier/easytier/easytier-go/platform"
 	"github.com/metacubex/wazero"
 	"github.com/metacubex/wazero/api"
 	"github.com/metacubex/wazero/imports/wasi_snapshot_preview1"
@@ -105,6 +106,12 @@ func NewHost(ctx context.Context, options Options) (_ *Host, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("instantiate embedded EasyTier core: %w", err)
 	}
+	// Compiling the core allocates ~100MB of throwaway compiler state on the
+	// Go heap. The Go runtime does not return it to the OS on its own after
+	// the initiating GC, so the process would retain the compilation peak as
+	// resident memory for its entire lifetime. NewHost runs once at startup,
+	// outside the packet path, so reclaim it explicitly here.
+	debug.FreeOSMemory()
 
 	host := &Host{
 		ctx:       lifetime,

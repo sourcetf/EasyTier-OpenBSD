@@ -44,7 +44,7 @@ checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
 
 [[package]]
 name = "guarden"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-core",
  "guarden-macros",
@@ -54,9 +54,9 @@ dependencies = [
 
 [[package]]
 name = "guarden-macros"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e0ef28f1077c259f9e7e238e234a78ce18cedbf0251fd2135f5fc23c40e79fe"
+checksum = "58fae24d0e2228af3151faf0153dc6c9ef1f7fa7965ffb7e3022052fcb78f297"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

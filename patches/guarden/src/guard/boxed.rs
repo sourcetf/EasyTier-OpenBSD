@@ -1,6 +1,5 @@
-use crate::Guard;
+use crate::guard::ContextGuard;
 use crate::guard::action::{Action, ActionState, Spawn};
-use crate::guard::{ContextGuard, GuardExt};
 use crate::task::{BoxTask, DetachableTask, TaskSpawner};
 use alloc::boxed::Box;
 use core::future::Future;
@@ -47,7 +46,7 @@ pub trait BoxedAction<Context> {
 // Blanket Boxing for any type that implements BoxAction
 impl<Context, A> ActionBoxExt<Context> for A
 where
-    A: BoxedAction<Context> + 'static,
+    A: BoxedAction<Context> + Send + Sync + 'static,
 {
     type Boxed = BoxAction<Context, A::Output>;
 
@@ -58,7 +57,7 @@ where
 }
 
 /// A boxed, type-erased action.
-type BoxAction<Context, Output> = Box<dyn BoxedAction<Context, Output = Output>>;
+type BoxAction<Context, Output> = Box<dyn BoxedAction<Context, Output = Output> + Send + Sync>;
 
 impl<Context, Output> Action<Context> for BoxAction<Context, Output> {
     type Output = Output;
@@ -74,13 +73,20 @@ pub struct BoxContextGuard<Context, Output> {
     guard: ContextGuard<Context, BoxAction<Context, Output>>,
 }
 
-impl<Context, Output> Guard for BoxContextGuard<Context, Output> {
-    type Context = Context;
-    type Action = BoxAction<Context, Output>;
+impl<Context, Output> BoxContextGuard<Context, Output> {
+    #[inline]
+    pub fn disassemble(self) -> (Context, BoxAction<Context, Output>) {
+        self.guard.disassemble()
+    }
 
     #[inline]
-    fn disassemble(self) -> (Self::Context, Self::Action) {
-        self.guard.disassemble()
+    pub fn trigger(self) -> Output {
+        self.guard.trigger()
+    }
+
+    #[inline]
+    pub fn defuse(self) -> Context {
+        self.guard.defuse()
     }
 }
 
@@ -162,9 +168,7 @@ where
     type Output = DetachableTask<BoxedSpawner, dyn BoxedTask<Output = Task::Output>>;
 
     fn fire(mut self: Box<Self>, context: Context) -> Self::Output {
-        let fut = self.ignite(context);
-        self.state = ActionState::Fired(fut);
-
+        self.state = ActionState::Fired(self.ignite(context));
         DetachableTask::from_boxed(BoxedSpawner, Pin::from(self))
     }
 }
@@ -182,7 +186,7 @@ pub type BoxAsyncGuard<Context, Output = ()> =
 
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
-    use crate::{guard, guard::Guard};
+    use crate::guard;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use core::time::Duration;

@@ -8,11 +8,11 @@ import (
 	"math"
 	"net/netip"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
+	"github.com/easytier/easytier/easytier-go/internal/contextutil"
 )
 
 const (
-	DataPlaneABIVersion = 3
+	DataPlaneABIVersion = 4
 
 	DataPlaneCapability    uint64 = 1 << 0
 	DataPlaneTCPCapability uint64 = 1 << 1
