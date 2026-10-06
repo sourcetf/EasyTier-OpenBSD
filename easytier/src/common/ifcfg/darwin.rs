@@ -39,6 +39,18 @@ async fn run_delete_shell_cmd(cmd: &str) -> Result<(), Error> {
     ignore_removed_shell_cmd_not_found(run_shell_cmd(cmd).await)
 }
 
+// On OpenBSD, an interface route needs the gateway to be an address assigned to
+// the interface (route(8) -iface flag), and does not support -hopcount.
+#[cfg(target_os = "openbsd")]
+fn get_iface_ipv4_cmd(name: &str) -> String {
+    format!("ifconfig {} | awk '/inet /{{print $2; exit}}'", name)
+}
+
+#[cfg(target_os = "openbsd")]
+fn get_iface_ipv6_cmd(name: &str) -> String {
+    format!("ifconfig {} | awk '/inet6 /{{print $2; exit}}'", name)
+}
+
 #[async_trait]
 impl IfConfiguerTrait for MacIfConfiger {
     async fn add_ipv4_route(
@@ -60,10 +72,18 @@ impl IfConfiguerTrait for MacIfConfiger {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        let source_hint = source_hint
-            .map(|source| format!(" -ifa {}", source))
-            .unwrap_or_default();
-        run_shell_cmd(
+        #[cfg(target_os = "openbsd")]
+        let cmd = format!(
+            "route -n add {}/{} $( {} ) -iface",
+            address,
+            cidr_prefix,
+            get_iface_ipv4_cmd(name)
+        );
+        #[cfg(not(target_os = "openbsd"))]
+        let cmd = {
+            let source_hint = source_hint
+                .map(|source| format!(" -ifa {}", source))
+                .unwrap_or_default();
             format!(
                 "route -n add {} -netmask {} -interface {}{} -hopcount {}",
                 address,
@@ -72,9 +92,9 @@ impl IfConfiguerTrait for MacIfConfiger {
                 source_hint,
                 cost.unwrap_or(7)
             )
-            .as_str(),
-        )
-        .await
+        };
+        let _ = (cost, source_hint);
+        run_shell_cmd(cmd.as_str()).await
     }
 
     async fn remove_ipv4_route(
@@ -83,16 +103,17 @@ impl IfConfiguerTrait for MacIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_delete_shell_cmd(
-            format!(
-                "route -n delete {} -netmask {} -interface {}",
-                address,
-                cidr_to_subnet_mask(cidr_prefix),
-                name
-            )
-            .as_str(),
-        )
-        .await
+        #[cfg(target_os = "openbsd")]
+        let cmd = format!("route -n delete {}/{}", address, cidr_prefix);
+        #[cfg(not(target_os = "openbsd"))]
+        let cmd = format!(
+            "route -n delete {} -netmask {} -interface {}",
+            address,
+            cidr_to_subnet_mask(cidr_prefix),
+            name
+        );
+        let _ = name;
+        run_delete_shell_cmd(cmd.as_str()).await
     }
 
     async fn add_ipv4_ip(
@@ -142,8 +163,11 @@ impl IfConfiguerTrait for MacIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_shell_cmd(format!("ifconfig {} inet6 {}/{} add", name, address, cidr_prefix).as_str())
-            .await
+        #[cfg(target_os = "openbsd")]
+        let cmd = format!("ifconfig {} inet6 {}/{} alias", name, address, cidr_prefix);
+        #[cfg(not(target_os = "openbsd"))]
+        let cmd = format!("ifconfig {} inet6 {}/{} add", name, address, cidr_prefix);
+        run_shell_cmd(cmd.as_str()).await
     }
 
     async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
@@ -165,6 +189,14 @@ impl IfConfiguerTrait for MacIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
+        #[cfg(target_os = "openbsd")]
+        let cmd = format!(
+            "route -n add -inet6 {}/{} $( {} ) -iface",
+            address,
+            cidr_prefix,
+            get_iface_ipv6_cmd(name)
+        );
+        #[cfg(not(target_os = "openbsd"))]
         let cmd = if let Some(cost) = cost {
             format!(
                 "route -n add -inet6 {}/{} -interface {} -hopcount {}",
@@ -176,6 +208,7 @@ impl IfConfiguerTrait for MacIfConfiger {
                 address, cidr_prefix, name
             )
         };
+        let _ = cost;
         run_shell_cmd(cmd.as_str()).await
     }
 
@@ -185,13 +218,14 @@ impl IfConfiguerTrait for MacIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_delete_shell_cmd(
-            format!(
-                "route -n delete -inet6 {}/{} -interface {}",
-                address, cidr_prefix, name
-            )
-            .as_str(),
-        )
-        .await
+        #[cfg(target_os = "openbsd")]
+        let cmd = format!("route -n delete -inet6 {}/{}", address, cidr_prefix);
+        #[cfg(not(target_os = "openbsd"))]
+        let cmd = format!(
+            "route -n delete -inet6 {}/{} -interface {}",
+            address, cidr_prefix, name
+        );
+        let _ = name;
+        run_delete_shell_cmd(cmd.as_str()).await
     }
 }
