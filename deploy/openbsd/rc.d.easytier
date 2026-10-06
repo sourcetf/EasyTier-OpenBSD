@@ -1,0 +1,7 @@
+#!/bin/ksh
+daemon="/usr/local/bin/easytier-core"
+daemon_flags="-c /etc/easytier/config.toml -r 0.0.0.0:15888"
+daemon_logger="daemon.info"
+. /etc/rc.d/rc.subr
+rc_reload=NO
+rc_cmd $1
